@@ -6,22 +6,16 @@ A Python package that creates from public sources a complete, CUSIP-date level p
 
 ## Features
 
-- 📊 **Complete panel data**: Business date completion with no missing dates (weekends removed but not holidays)
-- 🏷️ **Tenor classifications**: Automatic classification of bills (weeks), notes (years), and bonds (years)
-- 📈 **Vintage tracking**: Ordinal rankings by first issue date within date-tenor groups (-1 for when-issued)
-- 💰 **Cumulative issuance**: Track total issued amounts over time
-- 🔄 **Auction markers**: Identify openings, re-openings, and unscheduled re-openings
-- 💾 **Smart caching**: Local caching to minimize API calls
+- **Complete**: Business date completion (weekends removed but not holidays in this version)
+- **Tenor classifications**: Automatic classification of bills (weeks), notes (years), and bonds (years)
+- **Vintage tracking**: Ordinal rankings by first issue date within date-tenor groups
+    - 0 for on-the-run, 1 for first off-the-run, 2 for second off the run; -1 for when-issued
+- **Cumulative issuance**: Track total issued amounts over time
+- **Auction markers**: Identify openings, re-openings, and unscheduled re-openings
+- **Caching**: Smart local caching with partial date range merging — only missing ranges are fetched
+- **Incremental updates**: `updateUstCusipPanel()` updates an existing panel by fetching only new auction data
 
 ## Installation
-
-### From PyPI (when published)
-
-```bash
-pip install ustCusipPanel
-```
-
-### From Source
 
 ```bash
 git clone https://github.com/cgarriott/ustCusipPanel.git
@@ -48,6 +42,12 @@ df = ustCusipPanel.ustCusipPanel(silent=True)
 
 # Force fresh download (ignore cache)
 df = ustCusipPanel.ustCusipPanel(forceDownload=True)
+
+# Incrementally update a saved panel parquet file
+ustCusipPanel.updateUstCusipPanel("treasury_panel.parquet")
+
+# Or update a DataFrame in memory and get the result
+df_updated = ustCusipPanel.updateUstCusipPanel(df)
 ```
 
 ## Usage Examples
@@ -112,7 +112,7 @@ The returned Polars DataFrame contains the following columns:
 | `tenor` | Int64 | Tenor in weeks (bills) or years (notes/bonds) |
 | `vintage` | Int64 | Ordinal ranking by firstIssueDate (0 = on-the-run) |
 | `maturityDate` | Date | Security maturity date |
-| `coupon` | Float64 | Interest rate |
+| `coupon` | Float64 | Interest rate (0.0 for Bills, which are zero-coupon) |
 | `firstIssueDate` | Date | Original issue date |
 | `issuanceType` | String | "Opening" or "Re-opening" (None if no issuance) |
 | `auctionDate` | Date | Date of the most recent auction |
@@ -146,16 +146,18 @@ Cache files:
 - `auctions.csv`: Downloaded auction data
 - `auctions.txt`: Date range metadata
 
-The cache is automatically used when the requested date range matches. Use `forceDownload=True` to bypass the cache.
+The cache is automatically used and updated intelligently based on date range overlap. Six scenarios are handled:
 
-## Why Polars?
+| Scenario | Behavior |
+|----------|----------|
+| Exact match | Use cache as-is |
+| Subset (requested ⊂ cache) | Filter cached data |
+| Superset (cache ⊂ requested) | Fetch both ends, merge |
+| Left extension | Fetch earlier range, merge |
+| Right extension | Fetch later range, merge |
+| No overlap | Full download |
 
-This package uses [Polars](https://pola.rs/) instead of Pandas for several advantages:
-
-- **⚡ Performance**: Written in Rust, significantly faster than Pandas
-- **💾 Memory Efficiency**: Better memory management for large datasets
-- **🔄 Lazy Evaluation**: Query optimization before execution
-- **🎯 Intuitive API**: Clean and expressive syntax
+Use `forceDownload=True` to bypass the cache entirely.
 
 ## API Reference
 
@@ -173,6 +175,27 @@ Main function to generate the CUSIP panel.
 **Returns:**
 
 - `pl.DataFrame`: Complete CUSIP-date panel
+
+---
+
+### `updateUstCusipPanel(data, silent)`
+
+Incrementally update an existing CUSIP panel with new auction data.
+
+**Parameters:**
+
+- `data` (str, Path, or pl.DataFrame): Path to a parquet file produced by `ustCusipPanel()`, or a DataFrame with that output
+- `silent` (bool, default=False): Suppress progress messages
+
+**Returns:**
+
+- Updated `pl.DataFrame` if `data` was a DataFrame; `None` if `data` was a file path (file is updated in place)
+
+**Behavior:**
+
+- Checks for rows with missing coupons in non-TIPS, non-FRN Notes/Bonds to determine the update start date (e.g., for recently auctioned securities whose coupon wasn't yet set)
+- Falls back to the day after the latest date in the data if no missing coupons are found
+- Fetches only new auction data from the API, merges with the existing cache, and regenerates the full panel
 
 ## Requirements
 
